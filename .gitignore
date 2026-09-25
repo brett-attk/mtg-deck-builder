@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local app/runtime artifacts
+collections/*.csv
+generated-decks/*.csv
+mtg.csv
+collection.csv
+
+# Local environment/config
+.env
+.env.*
+!.env.example
+
+# IDE/system noise
+.DS_Store
+Thumbs.db
