@@ -16,7 +16,7 @@ from .clients import CursorSdkDeckClient, FrontierDeckClient, OfflineDeckClient
 from .collection import CollectionStore
 from .config import AppConfig
 from .deck_naming import choose_generated_deck_path
-from .exporters import format_quantity_name_set_lines
+from .exporters import format_archidekt_lines, format_moxfield_lines, format_standard_csv
 from .models import DeckCard
 from .scryfall import ScryfallImageCache
 
@@ -34,6 +34,11 @@ TOP_OPENAI_COMPAT_MODELS = [
     "gpt-4o",
     "gpt-4.1-mini",
     "o4-mini",
+]
+EXPORT_FORMAT_OPTIONS = [
+    ("moxfield", "Moxfield", ".txt"),
+    ("archidekt", "Archidekt", ".txt"),
+    ("csv", "Standard CSV", ".csv"),
 ]
 
 
@@ -309,9 +314,9 @@ class DeckBuilderWindow(Gtk.ApplicationWindow):
         refresh_saved_button = Gtk.Button(label="Refresh Generated Decks")
         refresh_saved_button.connect("clicked", self._on_refresh_saved_decks_clicked)
         generated_actions.append(refresh_saved_button)
-        copy_generated_button = Gtk.Button(label="Copy Generated Deck")
-        copy_generated_button.connect("clicked", self._on_copy_generated_deck_clicked)
-        generated_actions.append(copy_generated_button)
+        export_generated_button = Gtk.Button(label="Export Deck")
+        export_generated_button.connect("clicked", self._on_export_generated_deck_clicked)
+        generated_actions.append(export_generated_button)
         delete_generated_button = Gtk.Button(label="Delete Deck")
         delete_generated_button.connect("clicked", self._on_delete_generated_deck_clicked)
         generated_actions.append(delete_generated_button)
@@ -1908,25 +1913,131 @@ class DeckBuilderWindow(Gtk.ApplicationWindow):
         self._refresh_saved_decks()
         self._set_status("Refreshed generated deck list.")
 
-    def _on_copy_generated_deck_clicked(self, _button: Gtk.Button) -> None:
+    def _on_export_generated_deck_clicked(self, _button: Gtk.Button) -> None:
         if not self.saved_deck_cards:
-            self._set_status("No generated deck is loaded to copy.")
+            self._set_status("No generated deck is loaded to export.")
             return
         selected_idx = self.saved_decks_dropdown.get_selected()
         if selected_idx == Gtk.INVALID_LIST_POSITION or selected_idx >= len(self.saved_deck_files):
-            self._set_status("Select a generated deck file first.")
+            self._set_status("Select a generated deck file to export.")
             return
+        self._show_export_format_dialog(selected_idx)
 
-        csv_text = self._build_generated_deck_export_text(self.saved_deck_cards)
-        display = Gdk.Display.get_default()
-        if display is None:
-            self._set_status("Clipboard unavailable on this display.")
-            return
-        clipboard = display.get_clipboard()
-        clipboard.set(csv_text)
-        self._set_status(
-            f"Copied {len(self.saved_deck_cards)} rows from {self.saved_deck_files[selected_idx].name}."
+    def _show_export_format_dialog(self, selected_idx: int) -> None:
+        prompt = Gtk.Window(title="Export Deck", transient_for=self, modal=True)
+        prompt.set_default_size(380, 180)
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        container.set_margin_start(12)
+        container.set_margin_end(12)
+        container.set_margin_top(12)
+        container.set_margin_bottom(12)
+        prompt.set_child(container)
+
+        label = Gtk.Label(xalign=0)
+        label.set_wrap(True)
+        label.set_text(f"Choose export format for {self.saved_deck_files[selected_idx].name}")
+        container.append(label)
+
+        format_labels = [label for _fmt_id, label, _ext in EXPORT_FORMAT_OPTIONS]
+        dropdown = Gtk.DropDown.new(Gtk.StringList.new(format_labels), None)
+        dropdown.set_selected(0)
+        container.append(self._labeled("Format", dropdown))
+
+        button_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        button_row.set_halign(Gtk.Align.END)
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _btn: prompt.close())
+        export_button = Gtk.Button(label="Export")
+        export_button.connect(
+            "clicked",
+            self._on_export_format_confirmed,
+            prompt,
+            dropdown,
+            selected_idx,
         )
+        button_row.append(cancel_button)
+        button_row.append(export_button)
+        container.append(button_row)
+        prompt.present()
+
+    def _on_export_format_confirmed(
+        self,
+        _button: Gtk.Button,
+        prompt: Gtk.Window,
+        dropdown: Gtk.DropDown,
+        selected_idx: int,
+    ) -> None:
+        selected = dropdown.get_selected()
+        if selected == Gtk.INVALID_LIST_POSITION or selected < 0 or selected >= len(EXPORT_FORMAT_OPTIONS):
+            self._set_status("Select an export format.")
+            return
+        format_id, _label, ext = EXPORT_FORMAT_OPTIONS[selected]
+        prompt.close()
+        base_name = self.saved_deck_files[selected_idx].stem
+        suggested_name = f"{base_name}_{format_id}{ext}"
+
+        save_dialog = Gtk.FileChooserNative(
+            title=f"Export Deck ({format_id})",
+            transient_for=self,
+            action=Gtk.FileChooserAction.SAVE,
+            accept_label="Save",
+            cancel_label="Cancel",
+        )
+        save_dialog.set_current_name(suggested_name)
+        cards_snapshot = [DeckCard(section=card.section, name=card.name, quantity=card.quantity) for card in self.saved_deck_cards]
+        save_dialog.connect(
+            "response",
+            self._on_export_save_response,
+            format_id,
+            cards_snapshot,
+        )
+        save_dialog.show()
+
+    def _on_export_save_response(
+        self,
+        dialog: Gtk.FileChooserNative,
+        response: int,
+        format_id: str,
+        cards: List[DeckCard],
+    ) -> None:
+        if response != Gtk.ResponseType.ACCEPT:
+            dialog.destroy()
+            self._set_status("Deck export canceled.")
+            return
+        selected_file = dialog.get_file()
+        dialog.destroy()
+        if selected_file is None:
+            self._set_status("No export path selected.")
+            return
+        export_path = Path(selected_file.get_path())
+        self._set_status(f"Exporting deck as {format_id}...")
+        threading.Thread(
+            target=self._export_generated_deck_worker,
+            args=(cards, format_id, export_path),
+            daemon=True,
+        ).start()
+
+    def _export_generated_deck_worker(
+        self,
+        cards: List[DeckCard],
+        format_id: str,
+        export_path: Path,
+    ) -> None:
+        try:
+            export_text = self._build_generated_deck_export_text(cards, format_id)
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            export_path.write_text(export_text, encoding="utf-8")
+            GLib.idle_add(self._on_export_generated_deck_success, export_path, format_id, len(cards))
+        except Exception as err:
+            GLib.idle_add(self._on_export_generated_deck_failed, str(err))
+
+    def _on_export_generated_deck_success(self, export_path: Path, format_id: str, row_count: int) -> bool:
+        self._set_status(f"Exported {row_count} cards to {export_path.name} ({format_id}).")
+        return False
+
+    def _on_export_generated_deck_failed(self, error: str) -> bool:
+        self._set_status(f"Deck export failed: {error}")
+        return False
 
     def _on_delete_generated_deck_clicked(self, _button: Gtk.Button) -> None:
         selected_idx = self.saved_decks_dropdown.get_selected()
@@ -1989,8 +2100,12 @@ class DeckBuilderWindow(Gtk.ApplicationWindow):
         self._refresh_saved_decks()
         self._set_status(f"Deleted generated deck {target.name}.")
 
-    def _build_generated_deck_export_text(self, cards: List[DeckCard]) -> str:
-        return format_quantity_name_set_lines(cards, self.collection.card_meta)
+    def _build_generated_deck_export_text(self, cards: List[DeckCard], format_id: str) -> str:
+        if format_id == "moxfield":
+            return format_moxfield_lines(cards, self.collection.card_meta)
+        if format_id == "archidekt":
+            return format_archidekt_lines(cards, self.collection.card_meta)
+        return format_standard_csv(cards)
 
     def _on_saved_deck_card_selected(self, _listbox: Gtk.ListBox, row: Optional[Gtk.ListBoxRow]) -> None:
         if row is None:
