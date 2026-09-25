@@ -24,6 +24,12 @@ Desktop app for building MTG Commander decks from your own collection, with:
 - AI-assisted deck generation with guardrails
 - Offline heuristic deck generation fallback
 
+## Offline and AI Requirements
+
+- You can browse your imported collection offline.
+- For AI-powered deck building, you must connect to a supported Frontier/OpenAI-compatible model (or another configured supported provider).
+- The app also includes an offline heuristic deck builder, but AI quality/features require a supported model connection.
+
 ## Repository Layout
 
 - `deck_builder_app.py`: app entrypoint
