@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project README
+    url: https://github.com/brett-attk/mtg-deck-builder#readme
+    about: Setup instructions and usage docs
