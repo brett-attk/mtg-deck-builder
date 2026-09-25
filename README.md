@@ -3,8 +3,8 @@
 Desktop app for building MTG Commander decks from your own collection, with:
 
 - datastore-backed collection browsing (fast startup after import)
-- offline deck generation (no API key required)
-- optional AI providers (Cursor SDK and OpenAI-compatible/Frontier)
+- deck generation (frontier model API key required)
+- optional AI providers (required for deck generation)
 - Scryfall image caching and background sync
 - list and grid collection views with grouping/filtering
 
